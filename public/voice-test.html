@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>TMark AI Assistant</title>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div class="brand-lockup">
+          <div class="brand-mark" aria-hidden="true">T</div>
+          <div>
+            <div class="eyebrow">TMark Techs</div>
+            <h1>AI Voice Assistant</h1>
+          </div>
+        </div>
+        <div class="connection-state"><span></span> AI service ready</div>
+      </header>
+
+      <section class="intro">
+        <div>
+          <p class="eyebrow">Conversation workspace</p>
+          <h2>Ask. Understand. Act.</h2>
+          <p class="intro-copy">Speak naturally about your digital transformation needs. The conversational assistant understands your voice and responds in your chosen language.</p>
+        </div>
+      </section>
+
+      <section class="workspace-grid">
+        <aside class="settings-panel">
+          <div class="section-heading">
+            <div><p class="eyebrow">Step 01</p><h3>Set up your request</h3></div>
+            <span class="section-number">01</span>
+          </div>
+
+          <div class="field">
+            <label for="language">Response language</label>
+            <select id="language">
+              <option value="en-IN">English (India)</option>
+              <option value="ta-IN">Tamil</option>
+            </select>
+          </div>
+          <div class="context-field">
+            <label for="context">Knowledge context <span>Optional</span></label>
+            <textarea id="context" placeholder="Add reference information for the assistant">TMark Techs is a forward-thinking organization committed to redefining how technology drives business outcomes. They deliver faster, smarter, and more cost-effective solutions across Microsoft 365, SharePoint, Power Platform, Azure AI, and process automation. Services include Gen AI, Governance & Compliance, Digital Transformation & Strategy, Custom Application Development, Process Automation & Integration, and Data Intelligence & Reporting. TMark Techs helps clients with SharePoint modernization, intranet and collaboration portals, Power Virtual Agents, Power Pages, Azure Functions, Azure SQL, and secure hybrid cloud solutions.</textarea>
+          </div>
+        </aside>
+
+        <section class="conversation-panel">
+          <div class="section-heading">
+            <div><p class="eyebrow">Step 02</p><h3>Start a conversation</h3></div>
+            <span class="live-pill"><span></span> Live</span>
+          </div>
+          <div class="record-stage" id="recordStage">
+            <div class="mic-ring"><div class="mic-icon" aria-hidden="true">&#9835;</div></div>
+            <p class="record-title">Ready when you are</p>
+            <p class="record-hint">Start speaking naturally. Gemini listens and responds in real time.</p>
+            <div class="record-actions">
+              <button id="start" class="primary-action"><span class="record-dot"></span> Start conversation</button>
+              <button id="stop" disabled class="stop-action">End conversation</button>
+            </div>
+            <div id="status" class="status" role="status" aria-live="polite">Idle</div>
+          </div>
+          <div class="tip"><span aria-hidden="true">i</span><p>Your audio is processed securely by the conversational assistant using TMark Techs knowledge context.</p></div>
+        </section>
+      </section>
+
+    <script src="/app.js" defer></script>
+  </body>
+</html>
