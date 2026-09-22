@@ -1,16 +1,42 @@
 let liveSocket;
 let recognition;
 let isListening = false;
-let currentLanguage = "en-IN";
+let currentLanguage = "en-AU";
+let queuedTextMessages = [];
+let shouldAutoListen = true;
 
 const liveEndpoint = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/api/voice-live`;
 const startBtn = document.getElementById("start");
 const stopBtn = document.getElementById("stop");
 const statusEl = document.getElementById("status");
+const transcriptEl = document.getElementById("transcript");
+
+const TMARK_CONTEXT = [
+  "TMark Techs is an Australian digital transformation consultancy focused on Microsoft technologies.",
+  "Core services include SharePoint, Microsoft 365, Azure, Power Platform, Gen AI, governance and compliance, custom application development, process automation, digital transformation, and data intelligence.",
+  "If asked for contact information, share: info@tmarktechs.com.au, +61 449 690 870, and Norwest, NSW Australia.",
+  "Answer in Australian English, keep replies short, professional, and suitable for spoken conversation."
+].join(" ");
 
 function setStatus(value) {
+  if (!statusEl) return;
   statusEl.textContent = value;
-  statusEl.dataset.state = value.toLowerCase().replaceAll(" ", "-");
+  statusEl.dataset.state = value.toLowerCase().replace(/\s+/g, "-");
+}
+
+function setTranscript(text) {
+  if (!transcriptEl) return;
+  transcriptEl.textContent = text || "Ask about SharePoint, Microsoft 365, Azure, Power Platform, automation, and AI strategy.";
+}
+
+function sanitizeAssistantText(text) {
+  if (!text || typeof text !== "string") return "";
+
+  return text
+    .replace(/\[(.*?)\]\((.*?)\)/g, "$1")
+    .replace(/[*_`>#-]/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
 }
 
 function speakText(text) {
@@ -25,29 +51,59 @@ function speakText(text) {
 }
 
 function sendSetup() {
-  const language = document.getElementById("language").value;
-  const context = document.getElementById("context").value.trim();
-  currentLanguage = language;
+  if (!liveSocket || liveSocket.readyState !== WebSocket.OPEN) return;
+
   liveSocket.send(JSON.stringify({
     type: "setup",
-    language,
-    context,
+    language: currentLanguage,
+    context: TMARK_CONTEXT,
   }));
 }
 
+function flushQueuedTextMessages() {
+  if (!liveSocket || liveSocket.readyState !== WebSocket.OPEN || queuedTextMessages.length === 0) return;
+
+  while (queuedTextMessages.length > 0) {
+    const text = queuedTextMessages.shift();
+    liveSocket.send(JSON.stringify({ type: "text", text }));
+  }
+}
+
 function sendTextToAssistant(text) {
-  if (liveSocket?.readyState !== WebSocket.OPEN) return;
+  const trimmed = text?.trim();
+  if (!trimmed) return;
+
+  if (!liveSocket || liveSocket.readyState !== WebSocket.OPEN) {
+    queuedTextMessages.push(trimmed);
+    if (!liveSocket) {
+      startConversation();
+    }
+    return;
+  }
+
   liveSocket.send(JSON.stringify({
     type: "text",
-    text,
+    text: trimmed,
   }));
+}
+
+async function requestMicrophonePermission() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    throw new Error("This browser does not support microphone access.");
+  }
+
+  const stream = await navigator.mediaDevices.getUserMedia({
+    audio: true,
+  });
+
+  stream.getTracks().forEach((track) => track.stop());
 }
 
 function createRecognition() {
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SpeechRecognition) {
     setStatus("Voice recognition unsupported");
-    alert("This browser does not support speech recognition. Use a Chrome/Edge browser for best results.");
+    alert("This browser does not support speech recognition. Please use Chrome or Edge for the best experience.");
     return null;
   }
 
@@ -71,25 +127,40 @@ function createRecognition() {
     }
 
     if (finalTranscript.trim()) {
-      sendTextToAssistant(finalTranscript.trim());
+      const message = finalTranscript.trim();
+      setTranscript(message);
+      sendTextToAssistant(message);
       setStatus("Thinking...");
     } else if (interimTranscript.trim()) {
-      setStatus(`Listening... ${interimTranscript.trim()}`);
+      setTranscript(interimTranscript.trim());
+      setStatus("Listening...");
     }
   };
 
   recognitionInstance.onerror = (event) => {
-    if (event.error !== "no-speech") {
-      setStatus("Voice capture error");
+    const error = event?.error || "unknown";
+
+    if (error === "no-speech") {
+      setStatus("Listening...");
+      return;
     }
+
+    if (error === "not-allowed") {
+      setStatus("Microphone permission blocked");
+      alert("Microphone access was blocked. Please allow microphone access and click Start speaking again.");
+      stopConversation();
+      return;
+    }
+
+    setStatus("Voice capture failed");
   };
 
   recognitionInstance.onend = () => {
-    if (isListening && liveSocket?.readyState === WebSocket.OPEN) {
+    if (isListening && shouldAutoListen && liveSocket?.readyState === WebSocket.OPEN) {
       try {
         recognitionInstance.start();
       } catch {
-        // Ignore restart errors until the next user action.
+        // Ignore restart attempts while the mic is already active.
       }
     }
   };
@@ -97,7 +168,16 @@ function createRecognition() {
   return recognitionInstance;
 }
 
-function startListening() {
+async function startListening() {
+  try {
+    await requestMicrophonePermission();
+  } catch (error) {
+    setStatus("Microphone permission required");
+    alert(error?.message || "Please allow microphone access to use the voice assistant.");
+    stopConversation();
+    return;
+  }
+
   if (!recognition) {
     recognition = createRecognition();
   }
@@ -106,16 +186,19 @@ function startListening() {
 
   isListening = true;
   recognition.lang = currentLanguage;
+  startBtn.classList.add("listening");
+  setStatus("Listening...");
 
   try {
     recognition.start();
   } catch {
-    // If recognition is already active, ignore restart attempts.
+    // Ignore restart attempts when the recognizer is already active.
   }
 }
 
 function stopListening() {
   isListening = false;
+  startBtn.classList.remove("listening");
   try {
     recognition?.stop();
   } catch {
@@ -140,7 +223,7 @@ function playBase64Audio(message) {
     audio.onended = () => URL.revokeObjectURL(url);
     audio.play().catch(() => URL.revokeObjectURL(url));
   } catch {
-    // Ignore audio playback errors and fall back to text output if available.
+    // Ignore audio playback errors and fall back to spoken text if needed.
   }
 }
 
@@ -148,24 +231,34 @@ function handleLiveMessage(event) {
   const message = JSON.parse(event.data);
 
   if (message.type === "ready") {
-    startListening();
-    startBtn.textContent = "Conversation active";
+    startBtn.disabled = false;
+    stopBtn.disabled = false;
+    startBtn.textContent = "Listening";
+    startBtn.classList.add("listening");
     setStatus("Listening...");
+    startListening();
+    flushQueuedTextMessages();
     return;
   }
 
   if (message.type === "audio") {
-    setStatus("Responding...");
+    setStatus("Speaking...");
     playBase64Audio(message);
     return;
   }
 
   if (message.type === "reply") {
-    const answer = message.text || "";
+    const answer = sanitizeAssistantText(message.text || "");
     if (answer) {
-      setStatus("Responding...");
+      setTranscript(answer);
+      setStatus("Speaking...");
       speakText(answer);
     }
+    return;
+  }
+
+  if (message.type === "turn-complete") {
+    setStatus("Listening...");
     return;
   }
 
@@ -179,35 +272,41 @@ function handleLiveMessage(event) {
 function startConversation() {
   if (liveSocket) return;
 
+  shouldAutoListen = true;
+  startBtn.disabled = true;
+  stopBtn.disabled = false;
+  startBtn.textContent = "Connecting";
+  setStatus("Connecting...");
+
   try {
     liveSocket = new WebSocket(liveEndpoint);
 
     liveSocket.onopen = () => {
       sendSetup();
-      setStatus("Connecting to Gemini...");
+      flushQueuedTextMessages();
     };
 
     liveSocket.onmessage = handleLiveMessage;
     liveSocket.onerror = () => setStatus("Connection error");
     liveSocket.onclose = () => {
-      const wasActive = startBtn.textContent === "Conversation active";
+      shouldAutoListen = false;
       stopListening();
       liveSocket = null;
       startBtn.disabled = false;
       stopBtn.disabled = true;
-      startBtn.textContent = "Start conversation";
-      setStatus(wasActive ? "Connection closed" : "Idle");
+      startBtn.textContent = "Start speaking";
+      startBtn.classList.remove("listening");
+      setStatus("Ready");
     };
-
-    startBtn.disabled = true;
-    stopBtn.disabled = false;
   } catch (error) {
+    shouldAutoListen = false;
     setStatus("Connection unavailable");
     alert(`Could not connect to the assistant: ${error.message}`);
   }
 }
 
 function stopConversation() {
+  shouldAutoListen = false;
   stopListening();
 
   if ("speechSynthesis" in window) {
@@ -219,11 +318,21 @@ function stopConversation() {
     liveSocket = null;
   }
 
+  queuedTextMessages = [];
   startBtn.disabled = false;
   stopBtn.disabled = true;
-  startBtn.textContent = "Start conversation";
-  setStatus("Idle");
+  startBtn.textContent = "Start speaking";
+  startBtn.classList.remove("listening");
+  setStatus("Ready");
+  setTranscript("Ask about SharePoint, Microsoft 365, Azure, Power Platform, automation, and AI strategy.");
 }
 
-startBtn.addEventListener("click", startConversation);
+startBtn.addEventListener("click", () => {
+  if (liveSocket && liveSocket.readyState === WebSocket.OPEN) {
+    return;
+  }
+  startConversation();
+});
+
 stopBtn.addEventListener("click", stopConversation);
+
