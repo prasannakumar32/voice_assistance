@@ -1,4 +1,4 @@
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenAI, Modality } from "@google/genai";
 import WebSocket from "ws";
 
 const CONVERSATIONAL_MODEL =
@@ -30,9 +30,87 @@ function makeSystemInstruction(language, context) {
   ].join(" ");
 }
 
+function extractLiveText(message) {
+  const parts = message?.serverContent?.modelTurn?.parts || [];
+  const audioParts = parts.filter((part) => part.inlineData && /^audio\//i.test(part.inlineData.mimeType || ""));
+  if (audioParts.length > 0) {
+    return "";
+  }
+
+  return (parts || [])
+    .map((part) => part.text)
+    .filter(Boolean)
+    .join(" ")
+    .trim();
+}
+
+function extractLiveAudioBase64(message) {
+  const parts = message?.serverContent?.modelTurn?.parts || [];
+  const audioPart = parts.find((part) => part.inlineData && /^audio\//i.test(part.inlineData.mimeType || ""));
+  if (!audioPart?.inlineData?.data) {
+    return null;
+  }
+
+  return {
+    mimeType: audioPart.inlineData.mimeType || "audio/wav",
+    data: audioPart.inlineData.data,
+  };
+}
+
 export function handleLiveConnection(client) {
   let currentLanguage = "en-IN";
   let currentContext = DEFAULT_CONTEXT;
+  let liveSession = null;
+
+  async function ensureLiveSession() {
+    if (liveSession) return liveSession;
+
+    const ai = new GoogleGenAI({ apiKey: getApiKey() });
+    liveSession = await ai.live.connect({
+      model: CONVERSATIONAL_MODEL,
+      config: {
+        responseModalities: [Modality.AUDIO],
+        systemInstruction: makeSystemInstruction(currentLanguage, currentContext),
+        temperature: 0.7,
+      },
+      callbacks: {
+        onopen: () => {
+          send(client, { type: "ready", model: CONVERSATIONAL_MODEL });
+        },
+        onmessage: (event) => {
+          const text = extractLiveText(event);
+          if (text) {
+            send(client, { type: "reply", text });
+          }
+
+          const audio = extractLiveAudioBase64(event);
+          if (audio) {
+            send(client, {
+              type: "audio",
+              mimeType: audio.mimeType,
+              data: audio.data,
+            });
+          }
+
+          if (event?.serverContent?.turnComplete) {
+            send(client, { type: "turn-complete" });
+          }
+        },
+        onerror: (error) => {
+          console.error("[gemini-live] websocket error:", error);
+          send(client, {
+            type: "error",
+            error: error?.message || "Gemini Live connection failed.",
+          });
+        },
+        onclose: () => {
+          liveSession = null;
+        },
+      },
+    });
+
+    return liveSession;
+  }
 
   client.on("message", async (rawMessage) => {
     let message;
@@ -46,7 +124,15 @@ export function handleLiveConnection(client) {
     if (message.type === "setup") {
       currentLanguage = message.language || currentLanguage;
       currentContext = message.context || currentContext;
-      send(client, { type: "ready", model: CONVERSATIONAL_MODEL });
+      try {
+        await ensureLiveSession();
+      } catch (error) {
+        console.error("[gemini-live] setup failed:", error);
+        send(client, {
+          type: "error",
+          error: error?.message || "Unable to connect to Gemini Live.",
+        });
+      }
       return;
     }
 
@@ -55,26 +141,21 @@ export function handleLiveConnection(client) {
     }
 
     try {
-      const ai = new GoogleGenAI({ apiKey: getApiKey() });
-      const response = await ai.models.generateContent({
-        model: CONVERSATIONAL_MODEL,
-        contents: message.text,
-        config: {
-          systemInstruction: makeSystemInstruction(currentLanguage, currentContext),
-          temperature: 0.7,
-        },
-      });
-
-      const answer = response?.text || response?.output_text || "I could not generate a response.";
-      send(client, {
-        type: "reply",
-        text: String(answer).trim(),
+      const session = await ensureLiveSession();
+      session.sendClientContent({
+        turns: [
+          {
+            role: "user",
+            parts: [{ text: message.text.trim() }],
+          },
+        ],
+        turnComplete: true,
       });
     } catch (error) {
-      console.error("[gemini-text] generation failed:", error);
+      console.error("[gemini-live] generation failed:", error);
       send(client, {
         type: "error",
-        error: error?.message || "Could not generate a response from Gemini.",
+        error: error?.message || "Could not generate a response from Gemini Live.",
       });
     }
   });
@@ -82,10 +163,26 @@ export function handleLiveConnection(client) {
   client.on("close", () => {
     currentLanguage = "en-IN";
     currentContext = DEFAULT_CONTEXT;
+    if (liveSession) {
+      try {
+        liveSession.close();
+      } catch {
+        // Ignore close errors during disconnect.
+      }
+      liveSession = null;
+    }
   });
 
   client.on("error", () => {
     currentLanguage = "en-IN";
     currentContext = DEFAULT_CONTEXT;
+    if (liveSession) {
+      try {
+        liveSession.close();
+      } catch {
+        // Ignore close errors during disconnect.
+      }
+      liveSession = null;
+    }
   });
 }

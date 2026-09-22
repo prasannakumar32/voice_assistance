@@ -123,6 +123,27 @@ function stopListening() {
   }
 }
 
+function playBase64Audio(message) {
+  const mimeType = message.mimeType || "audio/wav";
+  const data = message.data || "";
+  if (!data) return;
+
+  try {
+    const binary = atob(data);
+    const bytes = new Uint8Array(binary.length);
+    for (let index = 0; index < binary.length; index += 1) {
+      bytes[index] = binary.charCodeAt(index);
+    }
+
+    const url = URL.createObjectURL(new Blob([bytes], { type: mimeType }));
+    const audio = new Audio(url);
+    audio.onended = () => URL.revokeObjectURL(url);
+    audio.play().catch(() => URL.revokeObjectURL(url));
+  } catch {
+    // Ignore audio playback errors and fall back to text output if available.
+  }
+}
+
 function handleLiveMessage(event) {
   const message = JSON.parse(event.data);
 
@@ -130,6 +151,12 @@ function handleLiveMessage(event) {
     startListening();
     startBtn.textContent = "Conversation active";
     setStatus("Listening...");
+    return;
+  }
+
+  if (message.type === "audio") {
+    setStatus("Responding...");
+    playBase64Audio(message);
     return;
   }
 
